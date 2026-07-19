@@ -1761,21 +1761,33 @@ async function runApply() {
   $('applyBtn').textContent = '⬇ 导出中…';
   await new Promise(r => setTimeout(r, 30));
 
-  processedBuffer = processBuffer(originalBuffer, semi, speed);
-  if (processedUrl) URL.revokeObjectURL(processedUrl);
-  processedUrl = URL.createObjectURL(encodeWAV(processedBuffer));
+  // 手机端关键修复：processBuffer / encodeMP3 是同步重活，会把主线程堵死数秒；
+  // 而常驻连接的 ScriptProcessor 回调也跑在主线程，堵塞期间无法及时填充音频缓冲，
+  // 音频硬件“欠载”就会重复旧缓冲/产生爆音卡顿（手机 CPU 弱尤为明显）。
+  // 编码前先挂起整个音频上下文（不断开节点，避开 iOS 重连不触发回调的坑），编码完再恢复。
+  if (audioCtx) { try { await audioCtx.suspend(); } catch (e) {} }
 
-  $('applyBtn').disabled = false;
-  $('applyBtn').textContent = '⬇ 导出音频文件';
+  let blob = null;
+  try {
+    processedBuffer = processBuffer(originalBuffer, semi, speed);
+    if (processedUrl) URL.revokeObjectURL(processedUrl);
+    processedUrl = URL.createObjectURL(encodeWAV(processedBuffer));
 
-  if (cancelled) { toast('已生成结果，未保存（已在保存框取消）'); return; }
+    if (cancelled) {
+      toast('已生成结果，未保存（已在保存框取消）');
+    } else {
+      toast('MP3 编码中…');
+      try { blob = encodeMP3(processedBuffer); }
+      catch (e) { toast('MP3 导出失败：' + e.message); }
+    }
+  } finally {
+    // 恢复音频上下文，保证导出后仍可正常试听（iOS 若因脱离手势恢复失败，下次点播放会由 ensureCtx 再恢复）
+    if (audioCtx) { try { await audioCtx.resume(); } catch (e) {} }
+    $('applyBtn').disabled = false;
+    $('applyBtn').textContent = '⬇ 导出音频文件';
+  }
 
-  // 已在上文停止一切播放，直接进入编码写入
-  toast('MP3 编码中…');
-  let blob;
-  try { blob = encodeMP3(processedBuffer); }
-  catch (e) { toast('MP3 导出失败：' + e.message); return; }
-  await writeExport(blob, name, handle);
+  if (blob) await writeExport(blob, name, handle);
 }
 
 // ---------- 播放（Web Audio 实时处理引擎） ----------
