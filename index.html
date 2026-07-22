@@ -1520,6 +1520,7 @@ function effectiveKey() {
 // ---------- 处理：变调 + 变速 (soundtouch) ----------
 function processBuffer(buffer, semitones, speed) {
   const st = new SoundTouch(buffer.sampleRate);
+  st.stretch.quickSeek = false;     // 关闭快速搜索：放慢时时间拉伸交叉相关对齐更精细，不再卡卡的
   st.tempo = speed;                 // 变速（不改调）
   st.pitch = Math.pow(2, semitones / 12); // 变调（不改速）
   const source = new WebAudioBufferSource(buffer);
@@ -1833,6 +1834,7 @@ function engineStart(key, startFrame) {
   if (engine) engineStop(true);
 
   const st = new SoundTouch(buffer.sampleRate);
+  st.stretch.quickSeek = false;     // 关闭快速搜索：实时预览放慢时同样平滑，不再卡卡
   if (key === 'result') { st.tempo = 1; st.pitch = 1; }
   else { st.tempo = currentSpeed(); st.pitch = Math.pow(2, currentSemi() / 12); }
 
