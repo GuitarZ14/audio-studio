@@ -1831,11 +1831,14 @@ async function runApply() {
 }
 
 // ---------- 播放（Web Audio 实时处理引擎） ----------
-// 用 soundtouch 的 SimpleFilter 流式处理，配合 ScriptProcessor 实时送声；
-// 播放中改 SoundTouch 的 tempo/pitch 即可实时变调/变速，无需先导出。
+// 播放引擎：离线高质量预渲染 + AudioBufferSourceNode 播放。
+// 点「试听原曲」时，先用 SoundTouch 把整段 originalBuffer 离线处理好（变速/变调），
+// 再用普通 AudioBufferSourceNode 播放——慢速(如<0.6x)下对齐更精细、不卡顿；
+// 同时彻底规避了 ScriptProcessor 在 iOS 上"断开后无声"的老问题。
 let engine = null;          // 当前播放引擎实例
-let engineResumePos = 0;    // 暂停时的原始帧位置
-let playNode = null;        // 复用的单一 ScriptProcessor 节点（避免反复创建导致后续静默）
+let engineResumePos = 0;    // 暂停/跳转时的源帧位置（原曲帧）
+let rafId = null;           // 进度刷新 rAF
+let engineToken = 0;        // 重入守卫：连点/连拖时仅最新一次 engineStart 生效
 
 function currentSemi() { return parseInt($('semiRange').value, 10); }
 function currentSpeed() { return parseFloat($('speedRange').value); }
@@ -1844,98 +1847,110 @@ function setPlayBtnState(activeKey, playing) {
   $('playOrigBtn').textContent = (activeKey === 'orig' && playing) ? '⏸ 暂停原曲' : '▶ 试听原曲';
 }
 
-// 播放原曲时，实时套用滑块的变调/变速
-function engineApplyLiveParams() {
-  if (engine && engine.playing && engine.key === 'orig' && engine.st) {
-    engine.st.tempo = currentSpeed();
-    engine.st.pitch = Math.pow(2, currentSemi() / 12);
-  }
-}
+// 离线预渲染方案下，播放中不实时改参；滑块松手(change)时由 liveRebuildOrig() 重建续播
+function engineApplyLiveParams() {}
 
 function engineStop(silent) {
-  // 不断开 playNode（常驻连接）：iOS Safari 断开 ScriptProcessor 后重连可能不再触发
-  // onaudioprocess，导致“导出后回播放界面”无声。这里仅置空引擎，回调检测到 engine=null
-  // 会自动输出静音（见 engineStart 的 onaudioprocess）。
+  if (engine) {
+    try { engine.src.stop(); } catch (e) {}
+    engine.stopped = true;
+  }
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
   engine = null;
   if (!silent) setPlayBtnState(null, false);
 }
 
 function pauseEngine() {
-  // 必须取整：SoundTouch 的 source 读取用该值做数组下标，浮点会导致 NaN 静音
-  engineResumePos = Math.floor((engine && engine.lastPos) || 0);
-  if (engine) engine.playing = false;   // 节点常驻，回调检测到 playing=false 即输出静音
+  if (!engine || !engine.playing) return;
+  const eng = engine;
+  const elapsed = (eng.ctx.currentTime - eng.baseStart) + eng.offsetSec; // playBuffer 秒
+  const sr = eng.playBuffer.sampleRate;
+  const srcPos = eng.key === 'result'
+    ? elapsed * sr
+    : elapsed * sr * eng.tempo;
+  const maxSrc = eng.buffer.duration * eng.buffer.sampleRate;
+  engineResumePos = Math.max(0, Math.min(Math.round(srcPos), Math.max(0, maxSrc - 1)));
+  try { eng.src.stop(); } catch (e) {}
+  eng.stopped = true;
+  eng.playing = false;
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  // 保留 engine 对象（key 仍在、playing=false），便于 togglePlay 从断点续播
 }
 
 function engineStart(key, startFrame) {
   const ctx = ensureCtx();
-  const buffer = key === 'result' ? processedBuffer : originalBuffer;
-  if (!buffer) { toast(key === 'result' ? '请先应用生成' : '请先导入音频'); return; }
+  const base = key === 'result' ? processedBuffer : originalBuffer;
+  if (!base) { toast(key === 'result' ? '请先应用生成' : '请先导入音频'); return; }
   if (engine) engineStop(true);
 
-  const st = new SoundTouch(buffer.sampleRate);
-  st.stretch.quickSeek = false;     // 关闭快速搜索：实时预览放慢时同样平滑，不再卡卡
-  if (key === 'result') { st.tempo = 1; st.pitch = 1; }
-  else { st.tempo = currentSpeed(); st.pitch = Math.pow(2, currentSemi() / 12); }
+  const myToken = ++engineToken;   // 重入守卫：连点/连拖时只有最新一次生效
+  const startPos = (startFrame != null && startFrame > 0) ? Math.floor(startFrame) : (engineResumePos || 0);
 
-  const source = new WebAudioBufferSource(buffer);
-  const filter = new SimpleFilter(source, st, () => { onEngineEnded(key); });
-  // 取整后再传给 SoundTouch：source 读取用该值做数组下标，浮点会取到 undefined→NaN 静音
-  if (startFrame && startFrame > 0) filter.sourcePosition = Math.floor(startFrame);
+  const doPlay = () => {
+    if (myToken !== engineToken) return;   // 已被更新的 engineStart 取代，放弃本次
+    let playBuffer, tempo;
+    if (key === 'result') {
+      playBuffer = processedBuffer; tempo = 1;
+    } else {
+      // 离线高质量预渲染：整段用 SoundTouch 处理，慢速(如<0.6x)下对齐更精细、不卡顿
+      playBuffer = processBuffer(originalBuffer, currentSemi(), currentSpeed());
+      tempo = currentSpeed();
+    }
+    const sr = playBuffer.sampleRate;
+    // 源帧(startPos) → playBuffer 偏移秒：orig 帧 t 对应 playBuffer 秒 = t/(sr*tempo)
+    const offsetSec = (key === 'result') ? startPos / sr : startPos / (sr * tempo);
+    const src = ctx.createBufferSource();
+    src.buffer = playBuffer;
+    src.connect(ctx.destination);
+    const beginAt = ctx.currentTime + 0.03;
+    try { src.start(beginAt, Math.max(0, Math.min(offsetSec, playBuffer.duration - 0.005))); } catch (e) {}
+    engine = {
+      ctx, src, key, buffer: base, playBuffer, tempo,
+      playing: true, stopped: false,
+      baseStart: beginAt, offsetSec,
+      curSrcPos: startPos,
+    };
+    src.onended = () => {
+      if (engine && engine.src === src && !engine.stopped) onEngineEnded(key);
+    };
+    startRaf(key);
+    setPlayBtnState(key, true);
+  };
 
-  const numCh = 2;
-  const bufSize = 4096;
-  // 复用全局单一 ScriptProcessor 节点，且**仅首次创建时连接一次、之后常驻**：
-  // 反复 createScriptProcessor + disconnect 后，浏览器（尤其 iOS Safari）往往只调度
-  // 最早创建的那一个；而 iOS 上断开后的节点重连后可能不再触发 onaudioprocess，
-  // 表现为“重新导入后无法播放”“导出后回播放界面无声”。常驻连接 + 回调内静音最稳。
-  let node = playNode;
-  if (!node) {
-    node = ctx.createScriptProcessor(bufSize, numCh, numCh);
-    playNode = node;
-    node.connect(ctx.destination);   // 仅首次连接，之后保持常驻，绝不 disconnect
+  if (key !== 'result') {
+    toast('处理中…');
+    setTimeout(doPlay, 60);   // 先让浏览器画出"处理中"，再同步 build（会短暂卡 UI）
+  } else {
+    doPlay();
   }
-  const tmp = new Float32Array(bufSize * 2);
-  node._ended = false;
-  node.onaudioprocess = (e) => {
-    const eng = engine;
-    if (!eng || !eng.playing || eng.key !== key) {
-      // 未播放：清空输出缓冲，避免残留噪声/爆音（节点常驻，仅靠回调静音）
-      const outL = e.outputBuffer.getChannelData(0);
-      const outR = e.outputBuffer.getChannelData(1);
-      outL.fill(0); outR.fill(0);
-      return;
-    }
-    const frames = eng.filter.extract(tmp, bufSize);
-    const outL = e.outputBuffer.getChannelData(0);
-    const outR = e.outputBuffer.getChannelData(1);
-    for (let i = 0; i < bufSize; i++) {
-      if (i < frames) { outL[i] = tmp[i * 2]; outR[i] = tmp[i * 2 + 1]; }
-      else { outL[i] = 0; outR[i] = 0; }
-    }
-    // 真实播放位置 = 已输出帧数 × 变速比，映射回源音频帧。
-    // 不能用 filter.sourcePosition（那是 SoundTouch 预读位置，会超前 ~0.5s，导致进度线偏后）。
-    if (frames > 0) {
-      const dOut = eng.filter.position - eng.lastOut;     // 本块新输出的帧数
-      eng.lastOut = eng.filter.position;
-      eng.playPos += dOut * eng.st.tempo;                 // 用当前 tempo 累加，兼容播放中改变速
-      updateProgress(key, eng.playPos);
-    } else if (!node._ended) {
-      node._ended = true; onEngineEnded(key);
-    }
-  };
+}
 
-  engine = {
-    ctx, node, st, source, filter, key, buffer, playing: true,
-    lastPos: Math.floor(startFrame || 0),
-    playPos: Math.floor(startFrame || 0),     // 真实播放位置（源音频帧，浮点累加）
-    lastOut: filter.position,     // 上次记录的输出帧计数
+// 进度刷新：基于 AudioContext 时钟计算实际播放位置（源帧），驱动进度条与计时
+function startRaf(key) {
+  if (rafId) cancelAnimationFrame(rafId);
+  const tick = () => {
+    const eng = engine;
+    if (!eng || eng.key !== key || !eng.playing) return;
+    const elapsed = (eng.ctx.currentTime - eng.baseStart) + eng.offsetSec; // playBuffer 秒
+    const sr = eng.playBuffer.sampleRate;
+    const srcPos = eng.key === 'result' ? elapsed * sr : elapsed * sr * eng.tempo;
+    eng.curSrcPos = srcPos;
+    updateProgress(key, Math.min(srcPos, eng.buffer.duration * eng.buffer.sampleRate));
+    if (elapsed < eng.playBuffer.duration) rafId = requestAnimationFrame(tick);
+    else rafId = null;
   };
-  setPlayBtnState(key, true);
+  rafId = requestAnimationFrame(tick);
+}
+
+// 播放中松手调速/变调：重新离线生成并从当前位置续播（仅对试听原曲生效）
+function liveRebuildOrig() {
+  if (engine && engine.playing && engine.key === 'orig') {
+    engineStart('orig', engine.curSrcPos || 0);
+  }
 }
 
 function updateProgress(key, sourcePos) {
   if (!engine || engine.key !== key) return;
-  engine.lastPos = sourcePos;
   const sr = engine.buffer.sampleRate;
   const dur = engine.buffer.duration;
   const ratio = dur ? Math.min(1, sourcePos / (sr * dur)) : 0;
@@ -1954,17 +1969,9 @@ function onEngineEnded(key) {
   setPlayBtnState(key, false);
 }
 
-// 波形点击/拖动跳转
+// 波形点击/拖动跳转：重建并从该位置播放（orig 会重新离线处理）
 function engineSeek(key, frame) {
-  if (engine && engine.playing && engine.key === key) {
-    engine.filter.sourcePosition = frame; // 平滑定位（内部会清空预读缓冲）
-    engine.playPos = frame;               // 播放位置对齐到点击点
-    engine.lastOut = engine.filter.position;
-    engine.lastPos = frame;
-    updateProgress(key, frame);
-  } else {
-    engineStart(key, frame);              // 未播放则从该位置开始
-  }
+  engineStart(key, frame);
 }
 
 // 播放按钮：同段再点 = 暂停/继续；不同段 = 切换
@@ -1982,14 +1989,9 @@ function togglePlay(key) {
 function rewindToStart() {
   if (!originalBuffer && !processedBuffer) { toast('请先导入音频'); return; }
   if (engine && engine.playing) {
-    // 正在播放 -> 直接跳到开头继续播放
-    // 注意：上一轮进度线改用 engine.playPos 累加，这里必须把 playPos / lastOut 一并归零，
-    // 否则下一个音频块会把 playPos 从老位置继续累加，播放头看起来"没动"。
-    engine.filter.sourcePosition = 0;
-    engine.playPos = 0;
-    engine.lastOut = engine.filter.position;   // 重新对齐基准，避免 dOut 跳变
-    engine.lastPos = 0;
-    updateProgress(engine.key, 0);
+    // 正在播放 -> 重建并从开头继续播放
+    engineResumePos = 0;
+    engineStart(engine.key, 0);
     toast('已回到开头');
   } else if (engine) {
     // 已暂停 -> 把续播位置设为开头，下次播放从 0 开始
@@ -2171,8 +2173,10 @@ $('fileCard').addEventListener('drop', (e) => {
   if (f) handleFile(f);
 });
 
-$('semiRange').addEventListener('input', () => { updatePredict(); engineApplyLiveParams(); });
-$('speedRange').addEventListener('input', () => { updatePredict(); engineApplyLiveParams(); });
+$('semiRange').addEventListener('input', () => { updatePredict(); });
+$('speedRange').addEventListener('input', () => { updatePredict(); });
+$('semiRange').addEventListener('change', () => { liveRebuildOrig(); });
+$('speedRange').addEventListener('change', () => { liveRebuildOrig(); });
 $('applyBtn').addEventListener('click', runApply);
 $('resetBtn').addEventListener('click', resetAdjust);
 $('playOrigBtn').addEventListener('click', () => togglePlay('orig'));
