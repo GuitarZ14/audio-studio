@@ -1700,6 +1700,9 @@ async function ingestBuffer(arr, name) {
   try {
     ensureCtx();
     engineStop(true);
+    setPlayBtnState(null, false);   // 换曲后强制把原曲按钮复位为"试听原曲"，避免卡在"暂停原曲"
+    engineResumePos = 0;            // 断点续播位置归零，防止残留旧文件的帧位置
+    drawProgress('orig', 0);        // 进度条归零
     $('origCur').textContent = '0:00';
     toast('解码音频中…');
     originalBuffer = await audioCtx.decodeAudioData(arr.slice(0));
