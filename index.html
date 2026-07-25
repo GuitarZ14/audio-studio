@@ -1707,6 +1707,7 @@ async function ingestBuffer(arr, name) {
 
     analysis = { bpm: null, key: null, mode: null };
     processedBuffer = null;
+    origCache.clear();   // 换曲后原曲离线缓存作废，避免串味
     if (originalUrl) URL.revokeObjectURL(originalUrl);
     originalUrl = URL.createObjectURL(encodeWAV(originalBuffer));
 
@@ -1848,6 +1849,18 @@ function setPlayBtnState(activeKey, playing) {
 }
 
 // 离线预渲染方案下，播放中不实时改参；滑块松手(change)时由 liveRebuildOrig() 重建续播
+
+// 原曲离线处理缓存：key=变调|速度，同一组合只算一次，重复调速/暂停续播秒开
+const origCache = new Map();
+const ORIG_CACHE_MAX = 8;
+function getOrigPlayBuffer(semi, speed) {
+  const k = semi + '|' + speed;
+  if (origCache.has(k)) { const v = origCache.get(k); origCache.delete(k); origCache.set(k, v); return v; }
+  const buf = processBuffer(originalBuffer, semi, speed);
+  origCache.set(k, buf);
+  while (origCache.size > ORIG_CACHE_MAX) origCache.delete(origCache.keys().next().value);
+  return buf;
+}
 function engineApplyLiveParams() {}
 
 function engineStop(silent) {
@@ -1892,8 +1905,8 @@ function engineStart(key, startFrame) {
     if (key === 'result') {
       playBuffer = processedBuffer; tempo = 1;
     } else {
-      // 离线高质量预渲染：整段用 SoundTouch 处理，慢速(如<0.6x)下对齐更精细、不卡顿
-      playBuffer = processBuffer(originalBuffer, currentSemi(), currentSpeed());
+      // 离线高质量预渲染：整段用 SoundTouch 处理；命中缓存则秒开，不重复等待
+      playBuffer = getOrigPlayBuffer(currentSemi(), currentSpeed());
       tempo = currentSpeed();
     }
     const sr = playBuffer.sampleRate;
@@ -1918,8 +1931,9 @@ function engineStart(key, startFrame) {
   };
 
   if (key !== 'result') {
-    toast('处理中…');
-    setTimeout(doPlay, 60);   // 先让浏览器画出"处理中"，再同步 build（会短暂卡 UI）
+    // 命中缓存则无需"处理中"等待，直接同步播放，体验更顺
+    if (origCache.has(currentSemi() + '|' + currentSpeed())) { doPlay(); }
+    else { toast('处理中…'); setTimeout(doPlay, 60); }
   } else {
     doPlay();
   }
