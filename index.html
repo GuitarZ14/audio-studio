@@ -148,6 +148,25 @@ h2 { font-size: 16px; margin: 0 0 14px; }
   .detect-bar-val { font-size: 19px; }
 }
 
+/* 历史记录面板（IndexedDB，仅本机） */
+.history-card { margin-top: 16px; }
+.history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.history-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--td-border); border-radius: 8px;
+  background: #fafcff;
+}
+.history-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.history-name { font-size: 14px; color: var(--td-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-meta { font-size: 11px; color: var(--td-text-secondary); }
+.history-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.btn.sm { padding: 6px 12px; font-size: 13px; border-radius: 7px; }
+
+@media (max-width: 560px) {
+  .history-item { flex-direction: column; align-items: stretch; }
+  .history-actions { justify-content: flex-end; }
+}
+
 
   </style>
 </head>
@@ -216,6 +235,13 @@ h2 { font-size: 16px; margin: 0 0 14px; }
             </div>
           </div>
         </div>
+      </section>
+
+      <!-- 历史记录：本地IndexedDB存储，点开即有，无需重复导入 -->
+      <section class="card history-card hidden" id="historyCard">
+        <h3 class="panel-title">历史记录</h3>
+        <p class="hint">点「载入」即可直接打开，无需重新导入（仅保存在本机，不会上传）</p>
+        <ul class="history-list" id="historyList"></ul>
       </section>
 
     </main>
@@ -1661,18 +1687,30 @@ function fmtTime(sec) {
 // ---------- 导入 ----------
 async function handleFile(file) {
   try {
+    const arr = await file.arrayBuffer();
+    await ingestBuffer(arr, file.name);
+  } catch (e) {
+    console.error(e);
+    toast('读取文件失败：' + (e.message || '无法读取'));
+  }
+}
+
+// 统一喂入入口：解码 + 存历史 + 渲染界面（文件导入与历史载入共用）
+async function ingestBuffer(arr, name) {
+  try {
     ensureCtx();
     engineStop(true);
     $('origCur').textContent = '0:00';
     toast('解码音频中…');
-    const arr = await file.arrayBuffer();
-    originalBuffer = await audioCtx.decodeAudioData(arr);
+    originalBuffer = await audioCtx.decodeAudioData(arr.slice(0));
+    await saveToHistory(name, arr.byteLength, arr.slice(0));  // 仅本机存储，不上传
+
     analysis = { bpm: null, key: null, mode: null };
     processedBuffer = null;
     if (originalUrl) URL.revokeObjectURL(originalUrl);
     originalUrl = URL.createObjectURL(encodeWAV(originalBuffer));
 
-    $('fileName').textContent = file.name;
+    $('fileName').textContent = name;
     $('fileMeta').textContent =
       `${originalBuffer.numberOfChannels} 声道 · ${originalBuffer.sampleRate} Hz · 时长 ${fmtTime(originalBuffer.duration)}`;
     $('origDur').textContent = fmtTime(originalBuffer.duration);
@@ -1684,6 +1722,7 @@ async function handleFile(file) {
     resetAdjust();
     toast('导入成功，自动检测中…');
     runDetect();   // 导入后自动检测调性与速度，无需手动点击
+    refreshHistoryUI();
   } catch (e) {
     console.error(e);
     toast('解码失败：' + (e.message || '不支持的格式'));
@@ -1997,6 +2036,129 @@ async function writeExport(blob, name, handle) {
   }
 }
 
+// ---------- 历史记录（IndexedDB，仅本机存储，不上传）----------
+const HIST_DB = 'audioStudioHistory';
+const HIST_STORE = 'files';
+const HIST_MAX = 8;                // 最多保留最近 8 条
+
+function openHistDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(HIST_DB, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(HIST_STORE)) {
+        db.createObjectStore(HIST_STORE, { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+function txDone(tx) {
+  return new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+
+async function saveToHistory(name, size, data) {
+  try {
+    const db = await openHistDB();
+    const id = name + '::' + size;          // 同名同大小视为同一文件，重复导入只更新到最前
+    const tx = db.transaction(HIST_STORE, 'readwrite');
+    tx.objectStore(HIST_STORE).put({ id, name, size, date: Date.now(), data });
+    await txDone(tx);
+    // 仅保留最近 HIST_MAX 条，超出删除最旧的
+    const all = await new Promise((res, rej) => {
+      const t = db.transaction(HIST_STORE, 'readonly');
+      const r = t.objectStore(HIST_STORE).getAll();
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+    all.sort((a, b) => b.date - a.date);
+    if (all.length > HIST_MAX) {
+      const wtx = db.transaction(HIST_STORE, 'readwrite');
+      all.slice(HIST_MAX).forEach(x => wtx.objectStore(HIST_STORE).delete(x.id));
+      await txDone(wtx);
+    }
+  } catch (e) { console.warn('历史保存失败（不影响使用）：', e); }
+}
+
+async function listHistory() {
+  try {
+    const db = await openHistDB();
+    const all = await new Promise((res, rej) => {
+      const t = db.transaction(HIST_STORE, 'readonly');
+      const r = t.objectStore(HIST_STORE).getAll();
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+    all.sort((a, b) => b.date - a.date);
+    return all;
+  } catch (e) { return []; }
+}
+
+async function deleteFromHistory(id) {
+  try {
+    const db = await openHistDB();
+    const tx = db.transaction(HIST_STORE, 'readwrite');
+    tx.objectStore(HIST_STORE).delete(id);
+    await txDone(tx);
+  } catch (e) { console.warn('历史删除失败', e); }
+}
+
+async function loadHistory(id) {
+  try {
+    const db = await openHistDB();
+    const item = await new Promise((res, rej) => {
+      const t = db.transaction(HIST_STORE, 'readonly');
+      const r = t.objectStore(HIST_STORE).get(id);
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+    if (!item || !item.data) { toast('该记录已不存在'); return; }
+    await ingestBuffer(item.data.slice(0), item.name);
+  } catch (e) { console.warn(e); toast('载入历史失败'); }
+}
+
+function fmtDate(ts) {
+  const d = new Date(ts);
+  const p = (n) => n.toString().padStart(2, '0');
+  return `${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+async function refreshHistoryUI() {
+  const list = await listHistory();
+  const card = $('historyCard');
+  const ul = $('historyList');
+  ul.innerHTML = '';
+  if (!list.length || $('fileCard').classList.contains('has-file')) {
+    card.classList.add('hidden');
+    return;
+  }
+  card.classList.remove('hidden');
+  for (const item of list) {
+    const li = document.createElement('li');
+    li.className = 'history-item';
+    const info = document.createElement('div');
+    info.className = 'history-info';
+    const nm = document.createElement('span');
+    nm.className = 'history-name';
+    nm.textContent = item.name;
+    const mt = document.createElement('span');
+    mt.className = 'history-meta';
+    mt.textContent = `${fmtDate(item.date)} · ${(item.size / 1048576).toFixed(1)} MB`;
+    info.appendChild(nm); info.appendChild(mt);
+    const acts = document.createElement('div');
+    acts.className = 'history-actions';
+    const loadBtn = document.createElement('button');
+    loadBtn.className = 'btn primary sm';
+    loadBtn.textContent = '载入';
+    loadBtn.addEventListener('click', () => loadHistory(item.id));
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn ghost sm';
+    delBtn.textContent = '删除';
+    delBtn.addEventListener('click', async () => { await deleteFromHistory(item.id); await refreshHistoryUI(); });
+    acts.appendChild(loadBtn); acts.appendChild(delBtn);
+    li.appendChild(info); li.appendChild(acts);
+    ul.appendChild(li);
+  }
+}
+
 // ---------- 事件绑定 ----------
 $('pickBtn').addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
 fileInput.addEventListener('change', (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); });
@@ -2035,6 +2197,9 @@ function bindWaveSeek(canvas, key) {
   canvas.addEventListener('touchmove', (e) => { if (e.touches[0]) seekAt(e.touches[0].clientX); }, { passive: true });
 }
 bindWaveSeek($('origWave'), 'orig');
+
+// 启动：若本地有历史记录且无正在处理的文件，展示历史面板
+refreshHistoryUI();
 
   </script>
 </body>
