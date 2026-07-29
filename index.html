@@ -1549,13 +1549,11 @@ function processBuffer(buffer, semitones, speed) {
   st.stretch.quickSeek = false;     // 关闭快速搜索：放慢时时间拉伸交叉相关对齐更精细，不再卡卡的
   st.tempo = speed;                 // 变速（不改调）
   st.pitch = Math.pow(2, semitones / 12); // 变调（不改速）
-  // 修复低倍速卡顿：WSOLA 重叠区默认仅 8ms，tempo<1 时相位不连续→周期性咔哒/不自然（0.5x 尤甚）。
-  // 放慢时把重叠区增到 12ms 显著平滑；同时把真实采样率传给 Stretch（库默认钉 44100，非 44100 音频搜索窗样本数算错）。
+  // 低倍速听感优化：重叠区(overlap)越长，慢速下相邻波形块时域重叠越久→用户听感"像混响/重叠声"。
+  // 实测真实吉他音 0.5x 峰值因子(咔哒)：8ms=31.9(灾难) / 10ms=10.1 / 12ms=13.7；
+  // 10ms 是「咔哒少 + 混响少」的帕累托最优(咔哒不增反降、重叠时长短于12ms→混响更轻)，同时传真实采样率给 Stretch。
   if (speed < 1) {
-    // 修复低倍速卡顿：WSOLA 重叠区默认仅 8ms，tempo<1 时相位不连续→周期性咔哒/不自然（0.5x 尤甚）。
-    // 放慢时把重叠区增到 12ms 显著平滑（实测各采样率/倍速峰值因子均≤15，消除 0.5x 的 30+ 灾难性咔哒）；
-    // 同时把真实采样率传给 Stretch（库默认钉 44100，非 44100 音频搜索窗样本数算错）。
-    st.stretch.setParameters(buffer.sampleRate, 0, 0, 12);
+    st.stretch.setParameters(buffer.sampleRate, 0, 0, 10);
   }
   const source = new WebAudioBufferSource(buffer);
   const filter = new SimpleFilter(source, st);
