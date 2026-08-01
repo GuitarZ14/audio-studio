@@ -1271,7 +1271,9 @@ class RealtimeProcessor extends AudioWorkletProcessor {
     }
     if (got < numFrames) {
       for (let c = 0; c < chOut; c++) out[c].fill(0, got);
-      if (this.source.position >= this.length) {
+      // 必须用 this.filter.sourcePosition（SimpleFilter._sourcePosition，随播放前进），
+      // 不能用 this.source.position（PCMSource.position，extract 不回写，永远停在 seek 位置）
+      if (this.filter.sourcePosition >= this.length) {
         this.playing = false;
         this.port.postMessage({ type: 'ended' });
       }
@@ -1279,7 +1281,7 @@ class RealtimeProcessor extends AudioWorkletProcessor {
     this._qc++;
     if (this._qc >= 64) {
       this._qc = 0;
-      this.port.postMessage({ type: 'progress', frame: this.source.position, length: this.length, sr: this.srcSr });
+      this.port.postMessage({ type: 'progress', frame: this.filter.sourcePosition, length: this.length, sr: this.srcSr });
     }
     return true;
   }
@@ -3013,7 +3015,12 @@ class MainPCM {
 function handleRtMessage(e) {
   const d = e.data;
   if (d.type === 'progress') {
-    rtLastFrame = d.frame; rtLastTs = performance.now();
+    // 只有帧数确实前进时才更新插值基准。
+    // 如果 worklet 发来 stale frame（≤ 当前值），不重置 rtLastTs，
+    // 让 doTick 的时间插值继续从上一个有效基准累加。
+    if (d.frame > rtLastFrame) {
+      rtLastFrame = d.frame; rtLastTs = performance.now();
+    }
     if (rtKey) updateProgress(rtKey, d.frame);
   } else if (d.type === 'ended') {
     onEngineEnded(rtKey || 'orig');
