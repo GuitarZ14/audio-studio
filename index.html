@@ -346,8 +346,19 @@ input[type=range]:active::-webkit-slider-thumb { transform: scale(1.12); }
           </div>
         </section>
 
-        <!-- 控制区：两列 -->
+        <!-- 控制区：两列（变速在前，更常用） -->
         <div class="controls">
+          <!-- 变速 -->
+          <section class="card">
+            <div class="ctrl-label">
+              <span class="name">变速</span>
+              <span><span class="val" id="speedLabel">1.00×</span><span class="delta" id="spdDelta">原速</span></span>
+            </div>
+            <input type="range" id="speedRange" min="0.2" max="1.2" step="0.01" value="1" />
+            <div class="range-scale"><span>0.2×</span><span>0.7×</span><span>1.2×</span></div>
+            <div class="keys-hint" style="margin-top:16px">放慢跟弹更轻松，加快练稳定节奏。拖动即实时生效，无需导出。</div>
+          </section>
+
           <!-- 变调 -->
           <section class="card">
             <div class="ctrl-label">
@@ -358,17 +369,6 @@ input[type=range]:active::-webkit-slider-thumb { transform: scale(1.12); }
             <div class="range-scale"><span>-12</span><span>0</span><span>+12</span></div>
             <div class="keys" id="keys"></div>
             <div class="keys-hint">一键选常用调性（以原曲为基准自动换算半音）</div>
-          </section>
-
-          <!-- 变速 -->
-          <section class="card">
-            <div class="ctrl-label">
-              <span class="name">变速</span>
-              <span><span class="val" id="speedLabel">1.00×</span><span class="delta" id="spdDelta">原速</span></span>
-            </div>
-            <input type="range" id="speedRange" min="0.2" max="1.2" step="0.01" value="1" />
-            <div class="range-scale"><span>0.2×</span><span>0.7×</span><span>1.2×</span></div>
-            <div class="keys-hint" style="margin-top:16px">放慢跟弹更轻松，加快练稳定节奏。拖动即实时生效，无需导出。</div>
           </section>
         </div>
 
