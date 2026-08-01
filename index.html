@@ -203,15 +203,64 @@ input[type=range]:active::-webkit-slider-thumb { transform: scale(1.12); }
 .toast.hidden { display: none; }
 
 @media (max-width: 640px) {
-  body { padding: 20px 12px 40px; }
-  .controls { grid-template-columns: 1fr; }
-  .head h1 { font-size: 19px; }
-  .file-row { align-items: stretch; }
-  .file-actions { justify-content: flex-start; }
-  .file-actions .btn { flex: 1 1 auto; min-width: 100px; text-align: center; justify-content: center; }
-  .key-big, .bpm-big { font-size: 30px; }
-  .result-layout { flex-direction: column; align-items: stretch; gap: 18px; }
-  .play-control { flex-direction: row; justify-content: center; padding-left: 0; padding-top: 4px; }
+  body { padding: 14px 10px 32px; }
+  .app { gap: 12px; }
+  .controls { grid-template-columns: 1fr; gap: 12px; }
+  .head { gap: 10px; padding: 2px 2px 4px; }
+  .head .logo { width: 38px; height: 38px; border-radius: 11px; }
+  .head .logo svg { width: 20px; height: 20px; }
+  .head h1 { font-size: 17px; }
+  .head p { font-size: 11.5px; }
+
+  /* 卡片整体收紧 */
+  .card { padding: 12px 14px; }
+  .card-title { font-size: 12px; margin-bottom: 10px; }
+
+  /* 文件卡紧凑 */
+  .file-row { align-items: center; gap: 10px; }
+  .file-ico { width: 34px; height: 34px; border-radius: 9px; }
+  .file-ico svg { width: 17px; height: 17px; }
+  .file-name { font-size: 14px; }
+  .file-sub { font-size: 11px; }
+  .file-actions .btn { font-size: 12.5px; padding: 8px 12px; }
+
+  /* 结果卡：横排紧凑，不纵向堆叠 */
+  .result { padding: 10px 14px; }
+  .result-layout { flex-direction: row; align-items: center; gap: 12px; }
+  .result-grid { gap: 14px; }
+  .key-big, .bpm-big { font-size: 22px; }
+  .key-big small, .bpm-big small { font-size: 12px; }
+  .col-label { font-size: 10px; margin-bottom: 3px; }
+  .orig { font-size: 11px; margin-top: 6px; }
+  .disclaimer { display: none; }   /* 移动端隐藏免责声明，省空间 */
+
+  /* 播放按钮缩小 */
+  .play-control { padding-left: 0; }
+  .play-pair { gap: 12px; }
+  .play-btn { width: 42px; height: 42px; }
+  .play-btn .ico svg { width: 17px; height: 17px; }
+  .rewind-btn { width: 42px; height: 42px; }
+  .rewind-btn .ico svg { width: 18px; height: 18px; }
+  .play-label { font-size: 10px; }
+  .play-cell { gap: 5px; }
+
+  /* 波形缩矮 */
+  .wave-wrap { padding: 10px 12px; }
+  .wave { height: 60px; }
+  .wave-foot { font-size: 10.5px; margin-top: 5px; }
+
+  /* 控制区紧凑 */
+  .ctrl-label { margin-bottom: 8px; }
+  .ctrl-label .name { font-size: 13px; }
+  .ctrl-label .val { font-size: 17px; }
+  .keys { gap: 6px; margin-top: 10px; }
+  .key-chip { font-size: 12px; padding: 5px 10px; }
+  .keys-hint { font-size: 11px; margin-top: 7px; }
+  .range-scale { font-size: 10px; margin-top: 5px; }
+
+  /* 底部动作 */
+  .btn-primary { padding: 11px 14px; font-size: 14px; }
+  .kbd-note { font-size: 10.5px; }
 }
 
   </style>
@@ -2915,6 +2964,7 @@ let rtSwitched = true;      // 需要重新 load 当前 buffer（换曲/切换�
 let rtCurSemi = 0, rtCurSpeed = 1.0;
 let engineToken = 0;        // 重入守卫：连点/连拖时仅最新一次生效
 let rafId = null;
+let progressIntervalId = null;  // setInterval 备份：移动端 RAF 被节流时仍能更新进度
 let rtLastFrame = 0;        // worklet 最近一次报告的源帧
 let rtLastTs = 0;           // 报告时间戳（主线程平滑插值用）
 let rtKey = null;           // 当前播放 key（'orig' / 'result'）
@@ -2980,6 +3030,9 @@ function createScriptProcessorEngine(ctx) {
   sp.connect(ctx.destination);
   silence.start();
   let tickCounter = 0;
+  // 预分配复用缓冲区，避免每次 onaudioprocess 都 new Float32Array（移动端 GC 压力大）
+  const spBufSize = 4096 * 2;
+  const spTmp = new Float32Array(spBufSize);
 
   sp.onaudioprocess = (e) => {
     const out = e.outputBuffer;
@@ -2988,7 +3041,9 @@ function createScriptProcessorEngine(ctx) {
       return;
     }
     const numFrames = out.length;
-    const tmp = new Float32Array(numFrames * 2);
+    // 确保复用缓冲区够大（通常恒为 4096）
+    const need = numFrames * 2;
+    const tmp = need <= spBufSize ? spTmp : new Float32Array(need);
     const got = spFilter.extract(tmp, numFrames);
     for (let c = 0; c < 2; c++) {
       const od = out.getChannelData(c);
@@ -3002,7 +3057,7 @@ function createScriptProcessorEngine(ctx) {
       }
     } else {
       tickCounter++;
-      if (tickCounter >= 8) {                   // 每 ~170ms 推一次进度
+      if (tickCounter >= 3) {                   // 每 ~280ms 推一次进度（移动端更跟手）
         tickCounter = 0;
         // 必须用 spFilter.sourcePosition，不是 spPcmSrc.position——
         // MainPCM.extract 用的是传入的 position 参数（来自 SimpleFilter 的 _sourcePosition），
@@ -3037,7 +3092,13 @@ function createScriptProcessorEngine(ctx) {
           const f = Math.max(0, Math.min(Math.floor(msg.frame), spBufLen - 1));
           if (spPcmSrc) spPcmSrc.position = f;
           if (spSt) spSt.clear();
-          if (spFilter) spFilter.sourcePosition = f;
+          // 重建 SimpleFilter 清除内部 WSOLA 状态，避免旧 midbuffer 残留导致位置计算异常
+          if (spPcmSrc && spSt) {
+            spFilter = new SimpleFilter(spPcmSrc, spSt);
+            spFilter.sourcePosition = f;
+          } else if (spFilter) {
+            spFilter.sourcePosition = f;
+          }
         } else if (msg.type === 'param') {
           if (spSt) {
             if (msg.tempo != null) {
@@ -3104,7 +3165,7 @@ function rtSetParams() {
 function engineStop(silent) {
   if (rtNode) { try { rtNode.port.postMessage({ type: 'pause' }); } catch (e) {} }
   rtPlaying = false; rtKey = null; rtSwitched = true;
-  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  stopRaf();
   if (!silent) setPlayBtnState(null, false);
 }
 
@@ -3112,7 +3173,7 @@ function pauseEngine() {
   if (!rtPlaying) return;
   if (rtNode) rtNode.port.postMessage({ type: 'pause' });
   rtPlaying = false;
-  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  stopRaf();
 }
 
 async function engineStart(key, startFrame) {
@@ -3134,6 +3195,8 @@ async function engineStart(key, startFrame) {
   if (startFrame && startFrame > 0) {
     rtNode.port.postMessage({ type: 'seek', frame: Math.floor(startFrame) });
     rtLastFrame = startFrame;
+  } else {
+    rtLastFrame = 0;
   }
   rtSetParams();
   rtNode.port.postMessage({ type: 'play' });
@@ -3142,26 +3205,37 @@ async function engineStart(key, startFrame) {
   // 导致波形进度和时间标签一上来就跳到错误位置（早期 progress 消息还没到的 ~190ms 间隙）。
   // AudioWorklet 在某些环境下（headless/部分浏览器/安全上下文）可能根本不发 progress，
   // 整个播放期间只靠 tick 插值，此时这个初始化是波形跟随进度的唯一依靠。
-  rtLastFrame = 0;
   rtLastTs = performance.now();
   setPlayBtnState(key, true);
   startRaf();
 }
 
-// 进度刷新：以 worklet 最近报告帧为基准，按当前速度在主线程平滑插值（render quantum 约 0.19s 一次推送）
+// 进度刷新：RAF 平滑插值 + setInterval 备份（移动端 RAF 可能被节流）
 function startRaf() {
   if (rafId) cancelAnimationFrame(rafId);
-  const tick = () => {
-    if (!rtPlaying) { rafId = null; return; }
+  if (progressIntervalId) clearInterval(progressIntervalId);
+  const doTick = () => {
+    if (!rtPlaying) return;
     const buf = (rtKey === 'result') ? processedBuffer : originalBuffer;
     if (buf) {
       const sr = buf.sampleRate;
       const est = rtLastFrame + (performance.now() - rtLastTs) / 1000 * rtCurSpeed * sr;
       updateProgress(rtKey, est);
     }
+  };
+  const tick = () => {
+    if (!rtPlaying) { rafId = null; return; }
+    doTick();
     rafId = requestAnimationFrame(tick);
   };
   rafId = requestAnimationFrame(tick);
+  // 移动端（尤其微信 X5）RAF 可能被节流，用 200ms 定时器兜底确保进度持续更新
+  progressIntervalId = setInterval(doTick, 200);
+}
+
+function stopRaf() {
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  if (progressIntervalId) { clearInterval(progressIntervalId); progressIntervalId = null; }
 }
 
 // 滑块松手调速/变调：实时引擎无需重建（input 已即时改参），此函数保留为空兼容旧调用
@@ -3180,6 +3254,7 @@ function updateProgress(key, sourcePos) {
 
 function onEngineEnded(key) {
   rtPlaying = false;
+  stopRaf();
   drawProgress(key, 1);
   const curEl = $('origCur');
   const buf = (key === 'result') ? processedBuffer : originalBuffer;
