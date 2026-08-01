@@ -2803,6 +2803,7 @@ function resetAdjust() {
   $('semiLabel').textContent = '0';
   $('speedLabel').textContent = '1.00×';
   updatePredict();
+  rtSetParams();   // 必须调——否则 UI 数值回原但音频引擎仍用旧参数
 }
 
 function updatePredict() {
