@@ -184,6 +184,7 @@ input[type=range]:active::-webkit-slider-thumb { transform: scale(1.12); }
 /* 页脚快捷键提示 */
 .kbd-note { font-size: 11.5px; color: var(--text-muted); text-align: center; margin-top: 4px; }
 .kbd { display: inline-block; background: #fff; border: 1px solid var(--cream-200); border-radius: 5px; padding: 1px 6px; font-size: 11px; color: var(--wood-700); font-family: ui-monospace, monospace; }
+.kbd-scope { display: inline-block; background: var(--cream-200); color: var(--wood-700); border-radius: 4px; padding: 1px 7px; font-size: 10.5px; margin-right: 6px; font-weight: 500; }
 
 /* 历史记录 */
 .history-card { margin-top: 0; }
@@ -385,8 +386,8 @@ input[type=range]:active::-webkit-slider-thumb { transform: scale(1.12); }
           <div class="out-name">将生成：<b id="outName">等待检测…</b></div>
         </div>
 
-        <!-- 页脚快捷键提示 -->
-        <div class="kbd-note">快捷键：<span class="kbd">空格</span> 播放 · <span class="kbd">←</span><span class="kbd">→</span> 微调速度 · <span class="kbd">0</span> 回到开头</div>
+        <!-- 页脚快捷键提示（仅电脑端，手机没键盘） -->
+        <div class="kbd-note"><span class="kbd-scope">电脑端快捷键</span><span class="kbd">空格</span> 播放 · <span class="kbd">←</span><span class="kbd">→</span> 微调速度 · <span class="kbd">0</span> 回到开头</div>
 
       </div><!-- /workArea -->
     </section>
