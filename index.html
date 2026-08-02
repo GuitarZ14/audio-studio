@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>音频生成器 · 张老师专用</title>
+  <title>跟练小工具 · 张老师练习工具</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20x%3D'14.3'%20y%3D'2'%20width%3D'3.4'%20height%3D'12'%20rx%3D'1.2'%20fill%3D'%236b4423'%2F%3E%3Crect%20x%3D'12.8'%20y%3D'1'%20width%3D'6.4'%20height%3D'3'%20rx%3D'1.2'%20fill%3D'%23523418'%2F%3E%3Cpath%20d%3D'M16%2013%20C12%2013%209%2015.5%209%2019%20C9%2021.5%2011%2022%2011%2024%20C11%2028%2013.5%2031%2016%2031%20C18.5%2031%2021%2028%2021%2024%20C21%2022%2023%2021.5%2023%2019%20C23%2015.5%2020%2013%2016%2013%20Z'%20fill%3D'%230052d9'%2F%3E%3Ccircle%20cx%3D'16'%20cy%3D'22'%20r%3D'3.2'%20fill%3D'%230b1b3a'%2F%3E%3Ccircle%20cx%3D'16'%20cy%3D'22'%20r%3D'2.4'%20fill%3D'%23fff'%2F%3E%3Crect%20x%3D'14.4'%20y%3D'27'%20width%3D'3.2'%20height%3D'1.1'%20rx%3D'0.4'%20fill%3D'%230b1b3a'%2F%3E%3Cline%20x1%3D'15.1'%20y1%3D'4'%20x2%3D'15.1'%20y2%3D'27'%20stroke%3D'%23fff'%20stroke-width%3D'0.4'%2F%3E%3Cline%20x1%3D'16'%20y1%3D'4'%20x2%3D'16'%20y2%3D'27'%20stroke%3D'%23fff'%20stroke-width%3D'0.4'%2F%3E%3Cline%20x1%3D'16.9'%20y1%3D'4'%20x2%3D'16.9'%20y2%3D'27'%20stroke%3D'%23fff'%20stroke-width%3D'0.4'%2F%3E%3C%2Fsvg%3E" />
   <style>
 :root{
@@ -1200,6 +1200,16 @@ class PitchShifter {
 //# sourceMappingURL=soundtouch.js.map
 
 
+// WSOLA 慢速混响修复：输出域重叠时长 = 输入域 overlap / tempo。
+// 固定 overlap 在慢速被拉长成混响/重叠声（尤其 <0.7x）。
+// 慢速让 overlap 随 tempo 缩放使输出域重叠恒定≈10ms（与原速一致，无回归感）；
+// 下限 4ms 防 overlap 过小致相位对齐差/咔哒（quickSeek=false 已提高对齐精度）。
+// 原速/加速返回 null → 不调 setParameters，保持默认 8ms，零回归。
+function overlapMsForTempo(tempo, base = 10) {
+  if (tempo == null || tempo >= 1) return null;
+  return Math.max(4, Math.round(base * tempo));
+}
+
 class PCMSource {
   constructor(ch0, ch1, length) {
     this.ch0 = ch0; this.ch1 = ch1; this.length = length; this.position = 0;
@@ -1229,7 +1239,8 @@ class RealtimeProcessor extends AudioWorkletProcessor {
         this.st = new SoundTouch();
         this.st.tempo = d.tempo != null ? d.tempo : 1.0;
         this.st.pitch = Math.pow(2, (d.semi || 0) / 12);
-        if (d.tempo != null && d.tempo < 1) this.st.stretch.setParameters(d.sr, 0, 0, 10);
+        const _ov = overlapMsForTempo(d.tempo);
+        if (_ov != null) this.st.stretch.setParameters(d.sr, 0, 0, _ov);
         this.filter = new SimpleFilter(this.source, this.st);
         this.playing = false;
       } else if (d.type === 'play') {
@@ -1245,7 +1256,8 @@ class RealtimeProcessor extends AudioWorkletProcessor {
         if (this.st) {
           if (d.tempo != null) {
             this.st.tempo = d.tempo;
-            if (d.tempo < 1) this.st.stretch.setParameters(this.srcSr, 0, 0, 10);
+            const _ov = overlapMsForTempo(d.tempo);
+            if (_ov != null) this.st.stretch.setParameters(this.srcSr, 0, 0, _ov);
           }
           if (d.semi != null) this.st.pitch = Math.pow(2, d.semi / 12);
         }
@@ -2410,6 +2422,16 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
   </script>
   <script>
 
+// WSOLA 慢速混响修复：输出域重叠时长 = 输入域 overlap / tempo。
+// 固定 overlap 在慢速被拉长成混响/重叠声（尤其 <0.7x）。
+// 慢速让 overlap 随 tempo 缩放，使输出域重叠恒定≈10ms（与原速一致，无回归感）；
+// 下限 4ms 防 overlap 过小致相位对齐差/咔哒（quickSeek=false 已提高对齐精度）。
+// 原速/加速返回 null → 不调 setParameters，保持默认 8ms，零回归。
+function overlapMsForTempo(tempo, base = 10) {
+  if (tempo == null || tempo >= 1) return null;
+  return Math.max(4, Math.round(base * tempo));
+}
+
 // ---------- DOM ----------
 const $ = (id) => document.getElementById(id);
 const fileInput = $('fileInput');
@@ -2588,11 +2610,11 @@ function processBuffer(buffer, semitones, speed) {
   st.tempo = speed;                 // 变速（不改调）
   st.pitch = Math.pow(2, semitones / 12); // 变调（不改速）
   // 低倍速听感优化：重叠区(overlap)越长，慢速下相邻波形块时域重叠越久→用户听感"像混响/重叠声"。
-  // 实测真实吉他音 0.5x 峰值因子(咔哒)：8ms=31.9(灾难) / 10ms=10.1 / 12ms=13.7；
-  // 10ms 是「咔哒少 + 混响少」的帕累托最优(咔哒不增反降、重叠时长短于12ms→混响更轻)，同时传真实采样率给 Stretch。
-  if (speed < 1) {
-    st.stretch.setParameters(buffer.sampleRate, 0, 0, 10);
-  }
+  // 实测真实吉他音 0.5x 峰值因子(咔哒)：8ms=31.9(灾难) / 10ms=10.1 / 12ms=13.7，10ms 是帕累托最优。
+  // 但固定 10ms 在更慢时输出域重叠被拉长，故改用 overlapMsForTempo：
+  // 随 tempo 缩放使输出域重叠恒定≈10ms（消除 <0.7x 混响），下限 4ms 防咔哒。
+  const _ov = overlapMsForTempo(speed);
+  if (_ov != null) st.stretch.setParameters(buffer.sampleRate, 0, 0, _ov);
   const source = new WebAudioBufferSource(buffer);
   const filter = new SimpleFilter(source, st);
   const numCh = buffer.numberOfChannels;
@@ -3091,7 +3113,8 @@ function createScriptProcessorEngine(ctx) {
           spSt.stretch.quickSeek = false;
           spSt.tempo = msg.tempo != null ? msg.tempo : 1.0;
           spSt.pitch = Math.pow(2, (msg.semi || 0) / 12);
-          if (msg.tempo != null && msg.tempo < 1) spSt.stretch.setParameters(msg.sr, 0, 0, 10);
+          const _ov = overlapMsForTempo(msg.tempo);
+          if (_ov != null) spSt.stretch.setParameters(msg.sr, 0, 0, _ov);
           spFilter = new SimpleFilter(spPcmSrc, spSt);
         } else if (msg.type === 'play') {
           rtPlaying = true;
@@ -3112,7 +3135,8 @@ function createScriptProcessorEngine(ctx) {
           if (spSt) {
             if (msg.tempo != null) {
               spSt.tempo = msg.tempo;
-              if (msg.tempo < 1) spSt.stretch.setParameters(spBufSr, 0, 0, 10);
+              const _ov = overlapMsForTempo(msg.tempo);
+              if (_ov != null) spSt.stretch.setParameters(spBufSr, 0, 0, _ov);
             }
             if (msg.semi != null) spSt.pitch = Math.pow(2, msg.semi / 12);
           }
